@@ -1,161 +1,203 @@
 #include "window.h"
 
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
+#include <QPushButton>
+#include <QSlider>
+#include <QVector2D>
+#include <QWheelEvent>
+#include <algorithm>
+#include <cmath>
+#include <vector>
 
-constexpr std::array<GLfloat, 21u> vertices = {
-    0.0f, 0.5f, 1.f,  0.f,  0.f,   0.5f, 1.0f, -0.5f, -0.5f, 0.f,  1.f,
-    0.f,  0.0f, 0.0f, 0.5f, -0.5f, 0.f,  0.f,  1.f,   1.0f,  0.0f,
+namespace {
+struct Vertex {
+    float x;
+    float y;
 };
 
-constexpr std::array<GLuint, 3u> indices = {0, 1, 2};
+void addTriangle(std::vector<Vertex>& vertices, QPointF a, QPointF b, QPointF c)
+{
+    for (const auto& p : {a, b, c})
+        vertices.push_back({static_cast<float>(p.x()), static_cast<float>(p.y())});
+}
+
+void addKochEdge(std::vector<Vertex>& vertices, QPointF a, QPointF b, int depth)
+{
+    if (depth == 0)
+        return;
+
+    const auto third = (b - a) / 3.0;
+    const auto p = a + third;
+    const auto q = b - third;
+    const auto peak = p + QPointF(0.5 * third.x() + std::sqrt(3.0) / 2.0 * third.y(),
+                                  -std::sqrt(3.0) / 2.0 * third.x() + 0.5 * third.y());
+    addTriangle(vertices, p, peak, q);
+    addKochEdge(vertices, a, p, depth - 1);
+    addKochEdge(vertices, p, peak, depth - 1);
+    addKochEdge(vertices, peak, q, depth - 1);
+    addKochEdge(vertices, q, b, depth - 1);
+}
+}
 
 Window::Window()
 {
-    // Add label for FPS
-    auto* fpsLabel = new QLabel("FPS: 0", this);
-    fpsLabel->setStyleSheet("QLabel { color: white; }");
-    fpsLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-    fpsLabel->adjustSize();
-    fpsLabel->move(0, 0);
-    fpsLabel->raise();
+    setWindowTitle(QStringLiteral("Снежинка Коха"));
+    setMinimumSize(540, 360);
 
-    connect(this, &Window::fpsUpdated, [fpsLabel](double fps) {
+    auto* panel = new QWidget(this);
+    panel->setStyleSheet("background: #eeeeee; color: #202020;");
+    auto* layout = new QHBoxLayout(panel);
+    auto* iterationLabel = new QLabel(this);
+    auto* slider = new QSlider(Qt::Horizontal, panel);
+    slider->setRange(0, 7);
+    slider->setValue(iterations_);
+    slider->setMinimumWidth(120);
+    slider->setAccessibleName(QStringLiteral("Число итераций"));
+    iterationLabel->setText(QStringLiteral("Итерации: %1").arg(iterations_));
+    auto* reset = new QPushButton(QStringLiteral("Сброс позиции"), panel);
+    auto* fpsLabel = new QLabel("FPS: 0", panel);
+    fpsLabel->setMinimumWidth(70);
+    layout->addWidget(iterationLabel);
+    layout->addWidget(slider);
+    layout->addWidget(reset);
+    layout->addWidget(fpsLabel);
+    panel->adjustSize();
+    panel->move(10, 10);
+
+    auto* hint = new QLabel(QStringLiteral("Колесо - масштаб, лкм — перемещение"), this);
+    hint->setStyleSheet("color: white;");
+    hint->setAttribute(Qt::WA_TransparentForMouseEvents);
+    hint->adjustSize();
+    hint->move(10, panel->height() + 16);
+
+    connect(slider, &QSlider::valueChanged, this, [this, iterationLabel](int value) {
+        iterations_ = value;
+        geometryDirty_ = true;
+        iterationLabel->setText(QStringLiteral("Итерации: %1").arg(value));
+        update();
+    });
+    connect(reset, &QPushButton::clicked, this, [this] {
+        center_ = {};
+        viewHeight_ = 3.2;
+        update();
+    });
+    connect(this, &Window::fpsUpdated, fpsLabel, [fpsLabel](double fps) {
         fpsLabel->setText(QString("FPS: %1").arg(fps, 0, 'f', 0));
-        fpsLabel->adjustSize();
     });
 }
 
 Window::~Window()
 {
-    texture_.reset();
+    makeCurrent();
+    vao_.destroy();
+    vbo_.destroy();
     program_.reset();
+    doneCurrent();
 }
 
 void Window::onInit()
 {
-    // Configure shaders
-    program_ = std::make_unique<QOpenGLShaderProgram>(this);
-    program_->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/shaders/template.vs");
-    program_->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/shaders/template.fs");
-    if (!program_->link()) {
-        qDebug() << "Ошибка линковки:" << program_->log();
+    program_ = std::make_unique<QOpenGLShaderProgram>();
+    if (!program_->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/shaders/template.vs") ||
+        !program_->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/shaders/template.fs") ||
+        !program_->link()) {
+        qFatal("Shader error: %s", qPrintable(program_->log()));
     }
-    program_->bind();
 
-    // Configure textures
-    texture_ = std::make_unique<QOpenGLTexture>(QImage(":/textures/cat.jpg"));
-    texture_->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
-    texture_->setWrapMode(QOpenGLTexture::WrapMode::Repeat);
-    program_->setUniformValue("tex_2d", 0);
-
-    // Configure uniforms
-    mvpUniform_ = program_->uniformLocation("mvp");
-    colorUniform_ = program_->uniformLocation("color");
-    program_->setUniformValue(colorUniform_, QColor::fromHsv(0, 0, 255));
-
-    // Create VAO object
     vao_.create();
     vao_.bind();
-
-    // Create VBO
     vbo_.create();
     vbo_.bind();
-    vbo_.setUsagePattern(QOpenGLBuffer::StaticDraw);
-    vbo_.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(GLfloat)));
-
-    // Create IBO
-    ibo_.create();
-    ibo_.bind();
-    ibo_.setUsagePattern(QOpenGLBuffer::StaticDraw);
-    ibo_.allocate(indices.data(), static_cast<int>(indices.size() * sizeof(GLuint)));
-
-    // Bind attributes
+    vbo_.setUsagePattern(QOpenGLBuffer::DynamicDraw);
+    program_->bind();
     program_->enableAttributeArray(0);
-    program_->setAttributeBuffer(0, GL_FLOAT, 0, 2, static_cast<int>(7 * sizeof(GLfloat)));
-
-    program_->enableAttributeArray(1);
-    program_->setAttributeBuffer(1,
-                                 GL_FLOAT,
-                                 static_cast<int>(2 * sizeof(GLfloat)),
-                                 3,
-                                 static_cast<int>(7 * sizeof(GLfloat)));
-
-    program_->enableAttributeArray(2);
-    program_->setAttributeBuffer(2,
-                                 GL_FLOAT,
-                                 static_cast<int>(5 * sizeof(GLfloat)),
-                                 2,
-                                 static_cast<int>(7 * sizeof(GLfloat)));
-
-    // Release all
-    program_->release();
-
+    program_->setAttributeBuffer(0, GL_FLOAT, 0, 2, sizeof(Vertex));
     vao_.release();
     vbo_.release();
-    ibo_.release();
+    program_->release();
+    glClearColor(0.035f, 0.055f, 0.09f, 1.0f);
+}
 
-    // Start timer for animation (if needed)
-    timer_.start();
-
-    // Еnable depth test and face culling
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-
-    // Clear all FBO buffers
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+void Window::rebuildSnowflake()
+{
+    std::vector<Vertex> vertices;
+    const QPointF a(0.0, 1.0);
+    const QPointF b(-std::sqrt(3.0) / 2.0, -0.5);
+    const QPointF c(std::sqrt(3.0) / 2.0, -0.5);
+    addTriangle(vertices, a, b, c);
+    addKochEdge(vertices, a, b, iterations_);
+    addKochEdge(vertices, b, c, iterations_);
+    addKochEdge(vertices, c, a, iterations_);
+    vbo_.bind();
+    vbo_.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(Vertex)));
+    vbo_.release();
+    vertexCount_ = static_cast<int>(vertices.size());
+    geometryDirty_ = false;
 }
 
 void Window::onRender()
 {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (geometryDirty_)
+        rebuildSnowflake();
 
-    // Calculate MVP matrix
-    model_.setToIdentity();
-    model_.translate(0, 0, -1.5);
-    view_.setToIdentity();
-    const auto mvp = projection_ * view_ * model_;
-
-    // Bind shader program
     program_->bind();
-
-    // Update uniform values
-    program_->setUniformValue(mvpUniform_, mvp);
-
-    if (animated_ && сolorAnimated_) {
-        const float dt = timer_.restart() / 1000.0f;
-        hue_ = std::fmod(hue_ + dt * (60.0f / 360.0f), 1.0f);
-        program_->setUniformValue(colorUniform_, QColor::fromHsvF(hue_, 1.0, 1.0));
-    }
-
-    // Add textures
-    glActiveTexture(GL_TEXTURE0);
-    texture_->bind();
-
-    // Bind VAO
+    program_->setUniformValue("center", QVector2D(center_));
+    const float halfHeight = static_cast<float>(viewHeight_ / 2.0);
+    program_->setUniformValue("halfExtent", QVector2D(halfHeight * width() / std::max(height(), 1), halfHeight));
     vao_.bind();
-
-    // Draw
-    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
-
-    // Release all
+    glDrawArrays(GL_TRIANGLES, 0, vertexCount_);
     vao_.release();
     program_->release();
-    texture_->release();
-
-    if (animated_)
-        update();
+    update();
 }
 
-void Window::onResize(const size_t width, const size_t height)
+void Window::onResize(size_t, size_t)
 {
-    // Configure viewport
-    glViewport(0, 0, static_cast<GLint>(width), static_cast<GLint>(height));
+}
 
-    // Configure matrix
-    const auto aspect = static_cast<float>(width) / static_cast<float>(height);
-    const auto zNear = 0.1f;
-    const auto zFar = 100.0f;
-    const auto fov = 60.0f;
-    projection_.setToIdentity();
-    projection_.perspective(fov, aspect, zNear, zFar);
+QPointF Window::worldPosition(const QPointF& position) const
+{
+    const double unitsPerPixel = viewHeight_ / std::max(height(), 1);
+    return center_ + QPointF(position.x() - width() / 2.0,
+                             height() / 2.0 - position.y()) * unitsPerPixel;
+}
+
+void Window::wheelEvent(QWheelEvent* event)
+{
+    const auto anchor = worldPosition(event->position());
+    const double steps = event->angleDelta().y() / 120.0;
+    viewHeight_ = std::clamp(viewHeight_ * std::pow(0.85, steps), 0.0001, 100.0);
+    center_ += anchor - worldPosition(event->position());
+    event->accept();
+    update();
+}
+
+void Window::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        lastMousePosition_ = event->position();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+    }
+}
+
+void Window::mouseMoveEvent(QMouseEvent* event)
+{
+    if (event->buttons() & Qt::LeftButton) {
+        center_ += worldPosition(lastMousePosition_) - worldPosition(event->position());
+        lastMousePosition_ = event->position();
+        update();
+        event->accept();
+    }
+}
+
+void Window::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        unsetCursor();
+        event->accept();
+    }
 }

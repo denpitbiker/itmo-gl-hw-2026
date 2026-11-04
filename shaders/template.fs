@@ -1,23 +1,11 @@
 #version 330 core
 
-uniform sampler2D tex_2d;
-uniform vec4 color;
-
-in vec3 vert_col;
-in vec2 vert_tex;
-
+in vec2 worldPosition;
 out vec4 out_col;
 
-void main() {
-        // Y-координата у формата jpg перевернута относительно OpenGL
-        vec4 texel = texture(tex_2d, vec2(vert_tex.x, 1.0 - vert_tex.y));
-
-        // https://ru.wikipedia.org/wiki/Оттенки_серого
-        float greyscale_factor = dot(texel.rgb, vec3(0.21, 0.71, 0.07));
-        vec3 semi_greyscale = mix(vec3(greyscale_factor), vert_col.rgb, 0.7f);
-
-        // Анимированный цвет из uniform
-        vec3 animated_color = mix(color.rgb, semi_greyscale, 0.7f);
-
-        out_col = vec4(animated_color, 1.0);
+void main()
+{
+    float radius = clamp(length(worldPosition), 0.0, 1.0);
+    vec3 color = mix(vec3(0.85, 0.97, 1.0), vec3(0.1, 0.5, 0.9), radius);
+    out_col = vec4(color, 1.0);
 }

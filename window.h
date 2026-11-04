@@ -2,12 +2,11 @@
 
 #include "openglwidget.h"
 
-#include <QElapsedTimer>
 #include <QOpenGLBuffer>
 #include <QOpenGLShaderProgram>
-#include <QOpenGLTexture>
 #include <QOpenGLVertexArrayObject>
-#include <QWindow>
+#include <QPointF>
+#include <memory>
 
 class Window : public OpenGLWidget
 {
@@ -15,30 +14,29 @@ class Window : public OpenGLWidget
 
 public:
     Window();
-    ~Window();
+    ~Window() override;
 
     void onInit() override;
     void onRender() override;
     void onResize(size_t width, size_t height) override;
 
+protected:
+    void wheelEvent(QWheelEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
 private:
-    QElapsedTimer timer_;
-    GLint colorUniform_ = -1;
-    float hue_ = 0;
+    void rebuildSnowflake();
+    QPointF worldPosition(const QPointF& position) const;
 
-    GLint mvpUniform_ = -1;
-
-    QMatrix4x4 model_;
-    QMatrix4x4 view_;
-    QMatrix4x4 projection_;
-
-    QOpenGLBuffer vbo_{QOpenGLBuffer::Type::VertexBuffer};
-    QOpenGLBuffer ibo_{QOpenGLBuffer::Type::IndexBuffer};
+    QOpenGLBuffer vbo_{QOpenGLBuffer::VertexBuffer};
     QOpenGLVertexArrayObject vao_;
-
-    std::unique_ptr<QOpenGLTexture> texture_;
     std::unique_ptr<QOpenGLShaderProgram> program_;
-
-    bool animated_ = true;
-    bool сolorAnimated_ = animated_;
+    int vertexCount_ = 0;
+    int iterations_ = 4;
+    bool geometryDirty_ = true;
+    double viewHeight_ = 3.2;
+    QPointF center_;
+    QPointF lastMousePosition_;
 };
